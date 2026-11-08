@@ -3,19 +3,21 @@ import { Dictionary } from './components/Dictionary'
 import { Home } from './components/Home'
 import { Learn } from './components/Learn'
 import { Practice } from './components/Practice'
+import { Stats } from './components/Stats'
 import { Descending } from './components/Descending'
 import { useBank } from './hooks/useBank'
 import { loadLog, saveLog } from './lib/history'
 import { publicUrl } from './lib/publicUrl'
 import type { QuestionRecord } from './types'
 
-type Mode = 'home' | 'learn' | 'practice' | 'dictionary'
+type Mode = 'home' | 'learn' | 'practice' | 'dictionary' | 'stats'
 
 function readRoute(): { mode: Mode; promptId: string | null } {
   const parts = location.hash.replace(/^#/, '').split('/').filter(Boolean)
   if (parts[0] === 'learn') return { mode: 'learn', promptId: parts[1] ?? null }
   if (parts[0] === 'practice') return { mode: 'practice', promptId: parts[1] ?? null }
   if (parts[0] === 'dictionary') return { mode: 'dictionary', promptId: null }
+  if (parts[0] === 'stats') return { mode: 'stats', promptId: null }
   return { mode: 'home', promptId: null }
 }
 
@@ -39,7 +41,9 @@ export function App() {
           ? 'Practice · Krillion Practice'
           : route.mode === 'dictionary'
             ? 'Dictionary · Krillion Practice'
-            : 'Krillion Practice'
+            : route.mode === 'stats'
+              ? 'Statistics · Krillion Practice'
+              : 'Krillion Practice'
     document.title = title
   }, [route.mode])
 
@@ -92,6 +96,8 @@ export function App() {
     )
   } else if (route.mode === 'dictionary') {
     body = <Dictionary index={index} points={shownPoints} onHome={() => navigate('#/')} />
+  } else if (route.mode === 'stats') {
+    body = <Stats log={log} points={shownPoints} onHome={() => navigate('#/')} onNavigate={navigate} />
   } else if (route.mode === 'practice') {
     body = (
       <Practice

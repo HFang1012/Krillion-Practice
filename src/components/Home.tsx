@@ -31,6 +31,14 @@ export function Home({ index, onNavigate }: { index: BankIndex; onNavigate: (has
           <span className="mode-name">Dictionary</span>
           <span className="mode-copy">Search a question and read every answer on its sheet.</span>
         </button>
+        <button type="button" className="mode-card" onClick={() => onNavigate('#/stats')}>
+          <img className="sprite" src={publicUrl('art/deepcut.png')} alt="" width={72} height={72} />
+          <span className="mode-kicker">Mode 04</span>
+          <span className="mode-name">Statistics</span>
+          <span className="mode-copy">
+            Best krillions, the prompts to work on, and overall knowledge and accuracy.
+          </span>
+        </button>
       </div>
       <p className="home-stats">
         {index.promptCount.toLocaleString('en-US')} prompts · {index.answerCount.toLocaleString('en-US')} answers · through {index.through}
