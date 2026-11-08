@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:fallback": "tsc --noEmit && VITE_PAGES_FALLBACK=1 BASE_PATH=/Krillion-Practice/public/ vite build && mkdir -p public/assets && cp page-fallback/assets/app.js page-fallback/assets/app.css public/assets/",
     "preview": "vite preview",
     "bank": "node scripts/build-bank.mjs"
   },

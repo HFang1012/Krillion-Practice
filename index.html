@@ -17,5 +17,25 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <!--
+      The branch Pages publisher serves this file unchanged, so /src/main.tsx
+      never runs. Vite dev and the compiled deploy skip this and use the entry above.
+    -->
+    <script>
+      ;(function () {
+        if (document.querySelector('script[src*="@vite/client"], script[src*="/assets/index-"]')) return
+        var path = location.pathname
+        var dir = path.endsWith('/') ? path : path.replace(/\/[^/]*$/, '/')
+        var base = location.origin + dir
+        var link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = base + 'public/assets/app.css'
+        document.head.appendChild(link)
+        var script = document.createElement('script')
+        script.type = 'module'
+        script.src = base + 'public/assets/app.js'
+        document.body.appendChild(script)
+      })()
+    </script>
   </body>
 </html>

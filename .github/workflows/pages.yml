@@ -6,13 +6,16 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
   pages: write
   id-token: write
 
+# Separate from the built-in "pages" group. That workflow publishes the
+# repository source with Jekyll and was replacing this compiled site.
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: pages-vite
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -40,5 +43,58 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # Pages is still set to publish the branch. That Jekyll run deploys the
+      # Vite source (index.html loads /src/main.tsx) and was finishing last,
+      # so the live site stayed blank. Wait for it, then deploy dist over it.
+      - name: Wait for the branch Pages publish
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+            const sha = context.sha
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+            let buildType = 'unknown'
+            try {
+              const site = await github.rest.repos.getPages({ owner, repo })
+              buildType = site.data.build_type || 'unknown'
+            } catch (error) {
+              core.info(`Pages lookup skipped (${error.status || error.message}).`)
+            }
+            if (buildType === 'workflow') {
+              core.info('Pages source is GitHub Actions. Deploying now.')
+              return
+            }
+
+            const { data } = await github.rest.actions.listRepoWorkflows({ owner, repo, per_page: 100 })
+            const branchWorkflow = data.workflows.find((item) => item.path === 'dynamic/pages/pages-build-deployment')
+            if (!branchWorkflow) {
+              core.info('No branch Pages workflow. Deploying now.')
+              return
+            }
+
+            const started = Date.now()
+            let sawRun = false
+            while (Date.now() - started < 4 * 60 * 1000) {
+              const runs = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: branchWorkflow.id,
+                head_sha: sha,
+                per_page: 5,
+              })
+              const run = runs.data.workflow_runs.find((item) => item.head_sha === sha)
+              if (run) {
+                sawRun = true
+                core.info(`Branch Pages build is ${run.status}.`)
+                if (run.status === 'completed') return
+              } else if (!sawRun && Date.now() - started > 45 * 1000) {
+                core.info('Branch Pages build did not start. Deploying now.')
+                return
+              }
+              await sleep(5000)
+            }
+            core.warning('Branch Pages build did not finish in time. Deploying the compiled site anyway.')
       - id: deployment
         uses: actions/deploy-pages@v4
