@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Dictionary } from './components/Dictionary'
 import { Home } from './components/Home'
 import { Learn } from './components/Learn'
 import { Practice } from './components/Practice'
@@ -8,12 +9,13 @@ import { loadLog, saveLog } from './lib/history'
 import { publicUrl } from './lib/publicUrl'
 import type { QuestionRecord } from './types'
 
-type Mode = 'home' | 'learn' | 'practice'
+type Mode = 'home' | 'learn' | 'practice' | 'dictionary'
 
 function readRoute(): { mode: Mode; promptId: string | null } {
   const parts = location.hash.replace(/^#/, '').split('/').filter(Boolean)
   if (parts[0] === 'learn') return { mode: 'learn', promptId: parts[1] ?? null }
   if (parts[0] === 'practice') return { mode: 'practice', promptId: parts[1] ?? null }
+  if (parts[0] === 'dictionary') return { mode: 'dictionary', promptId: null }
   return { mode: 'home', promptId: null }
 }
 
@@ -31,7 +33,13 @@ export function App() {
 
   useEffect(() => {
     const title =
-      route.mode === 'learn' ? 'Learn · Krillion Practice' : route.mode === 'practice' ? 'Practice · Krillion Practice' : 'Krillion Practice'
+      route.mode === 'learn'
+        ? 'Learn · Krillion Practice'
+        : route.mode === 'practice'
+          ? 'Practice · Krillion Practice'
+          : route.mode === 'dictionary'
+            ? 'Dictionary · Krillion Practice'
+            : 'Krillion Practice'
     document.title = title
   }, [route.mode])
 
@@ -82,6 +90,8 @@ export function App() {
         onClearForce={() => navigate('#/learn')}
       />
     )
+  } else if (route.mode === 'dictionary') {
+    body = <Dictionary index={index} points={shownPoints} onHome={() => navigate('#/')} />
   } else if (route.mode === 'practice') {
     body = (
       <Practice

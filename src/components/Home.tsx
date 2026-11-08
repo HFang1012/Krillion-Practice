@@ -25,6 +25,12 @@ export function Home({ index, onNavigate }: { index: BankIndex; onNavigate: (has
             Type an answer and get the same tier, points, and depth. Extra hits raise that question. Next logs it.
           </span>
         </button>
+        <button type="button" className="mode-card" onClick={() => onNavigate('#/dictionary')}>
+          <img className="sprite" src={publicUrl('art/schooler.png')} alt="" width={72} height={72} />
+          <span className="mode-kicker">Mode 03</span>
+          <span className="mode-name">Dictionary</span>
+          <span className="mode-copy">Search a question and read every answer on its sheet.</span>
+        </button>
       </div>
       <p className="home-stats">
         {index.promptCount.toLocaleString('en-US')} prompts · {index.answerCount.toLocaleString('en-US')} answers · through {index.through}

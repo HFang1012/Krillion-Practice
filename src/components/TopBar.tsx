@@ -6,7 +6,7 @@ export function TopBar({
   onHome,
   logCount,
 }: {
-  mode: 'Learn' | 'Practice'
+  mode: 'Learn' | 'Practice' | 'Dictionary'
   points: number
   onHome: () => void
   logCount?: number

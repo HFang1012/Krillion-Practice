@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { BankIndex, Tier } from '../types'
 import { usePrompt } from '../hooks/usePrompt'
 import { TIER_META } from '../lib/tiers'
@@ -6,7 +6,6 @@ import { Descending } from './Descending'
 import { Sprite } from './Sprite'
 import { TopBar } from './TopBar'
 
-const DEEP_PAGE = 80
 const SHALLOW = ['rare', 'schooler', 'tooclever', 'plankton'] as const
 
 function middle(list: string[]): string {
@@ -14,26 +13,17 @@ function middle(list: string[]): string {
 }
 
 function DeepCuts({ answers }: { answers: string[] }) {
-  const [shown, setShown] = useState(DEEP_PAGE)
-  const visible = answers.slice(0, shown)
-  const rest = answers.length - visible.length
-
   return (
     <section className="deep-block">
       <h2>
         Deep cuts · 85
         {answers.length > 1 ? <span> · {answers.length.toLocaleString('en-US')}</span> : null}
       </h2>
-      <ul className="chips deep-scroll">
-        {visible.map((answer, index) => (
+      <ul className="chips deep-rows">
+        {answers.map((answer, index) => (
           <li key={`${answer}-${index}`}>{answer}</li>
         ))}
       </ul>
-      {rest > 0 ? (
-        <button type="button" className="btn btn-ghost btn-tiny more-deep" onClick={() => setShown((count) => count + DEEP_PAGE)}>
-          Show {Math.min(DEEP_PAGE, rest).toLocaleString('en-US')} more
-        </button>
-      ) : null}
     </section>
   )
 }
