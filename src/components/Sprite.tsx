@@ -9,7 +9,7 @@ export function Sprite({
   size?: number
 }) {
   const ghost = tier === 'noecho'
-  const src = ghost ? '/art/krillion.png' : TIER_META[tier].art
+  const src = ghost ? TIER_META.krillion.art : TIER_META[tier].art
   const className = ghost ? 'sprite ghost' : tier === 'krillion' ? 'sprite krill' : 'sprite'
   return <img className={className} src={src} alt="" width={size} height={size} />
 }

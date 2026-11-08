@@ -1,5 +1,6 @@
 import type { Tier } from '../types'
 import { TIERS } from '../types'
+import { publicUrl } from './publicUrl'
 
 export { TIERS }
 
@@ -11,37 +12,37 @@ export const TIER_META: Record<
     label: 'One in a Krillion',
     score: 100,
     line: 'The designated gem. Trench floor.',
-    art: '/art/krillion.png',
+    art: publicUrl('art/krillion.png'),
   },
   deepcut: {
     label: 'Deep cut',
     score: 85,
     line: 'True obscurity. Few go this deep.',
-    art: '/art/deepcut.png',
+    art: publicUrl('art/deepcut.png'),
   },
   rare: {
     label: 'Rare',
     score: 60,
     line: 'Genuinely uncommon. Nice pull.',
-    art: '/art/rare.png',
+    art: publicUrl('art/rare.png'),
   },
   schooler: {
     label: 'Schooler',
     score: 30,
     line: 'Solid — swims with the school.',
-    art: '/art/schooler.png',
+    art: publicUrl('art/schooler.png'),
   },
   tooclever: {
     label: 'Too clever',
     score: 15,
     line: 'The go-to obscure pick. Everyone reaches for it.',
-    art: '/art/tooclever.png',
+    art: publicUrl('art/tooclever.png'),
   },
   plankton: {
     label: 'Plankton',
     score: 10,
     line: 'The answer everyone blurts out.',
-    art: '/art/plankton.png',
+    art: publicUrl('art/plankton.png'),
   },
 }
 

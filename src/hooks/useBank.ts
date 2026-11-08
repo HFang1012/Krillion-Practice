@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { BankIndex } from '../types'
+import { publicUrl } from '../lib/publicUrl'
 
 export function useBank() {
   const [index, setIndex] = useState<BankIndex | null>(null)
@@ -7,7 +8,7 @@ export function useBank() {
 
   useEffect(() => {
     let cancel = false
-    fetch('/bank/index.json')
+    fetch(publicUrl('bank/index.json'))
       .then(async (response) => {
         if (!response.ok) throw new Error('The answer bank is not built yet.')
         return (await response.json()) as BankIndex

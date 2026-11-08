@@ -5,6 +5,7 @@ import { Practice } from './components/Practice'
 import { Descending } from './components/Descending'
 import { useBank } from './hooks/useBank'
 import { loadLog, saveLog } from './lib/history'
+import { publicUrl } from './lib/publicUrl'
 import type { QuestionRecord } from './types'
 
 type Mode = 'home' | 'learn' | 'practice'
@@ -64,7 +65,7 @@ export function App() {
   if (error || (index && index.prompts.length === 0)) {
     body = (
       <div className="home">
-        <img className="sprite krill bob hero-krill" src="/art/krillion.png" alt="" width={96} height={96} />
+        <img className="sprite krill bob hero-krill" src={publicUrl('art/krillion.png')} alt="" width={96} height={96} />
         <h1>bank missing</h1>
         <p className="tagline">Run npm run bank, then reload.</p>
       </div>
