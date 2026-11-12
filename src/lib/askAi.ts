@@ -8,18 +8,25 @@ import { normalize } from './score'
  */
 export const MODELS = [
   {
-    id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
-    label: 'Fast',
-    detail: 'Qwen 2.5 1.5B · about 1 GB',
+    id: 'Qwen2.5-3B-Instruct-q4f16_1-MLC',
+    label: 'Standard',
+    detail: 'Qwen 2.5 3B · about 2 GB, knows far more',
     thinks: false,
-    maxTokens: 220,
+    maxTokens: 520,
+  },
+  {
+    id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
+    label: 'Lite',
+    detail: 'Qwen 2.5 1.5B · about 1 GB, for slower devices',
+    thinks: false,
+    maxTokens: 520,
   },
   {
     id: 'DeepSeek-R1-Distill-Qwen-7B-q4f16_1-MLC',
     label: 'DeepSeek',
     detail: 'DeepSeek R1 7B · about 4.5 GB, slower, thinks first',
     thinks: true,
-    maxTokens: 1400,
+    maxTokens: 1800,
   },
 ] as const
 
@@ -136,15 +143,25 @@ function cleanLine(line: string): string {
     .trim()
 }
 
+export type AskSpec = {
+  /** The question with letter/length rules removed: the model never has to spell. */
+  question: string
+  /** Common answers to steer away from. */
+  avoid: string[]
+  /** List mode: many candidates for code to filter. Otherwise: a few obscure picks. */
+  list: boolean
+  /** Simple hints a model can follow ("starts with M"); code still checks every rule. */
+  hint?: string
+}
+
 /**
- * Stream niche answers from the local model. `onAnswer` fires once per
- * finished line, so chips appear while it is still writing. A thinking
- * model's <think> block is skipped; `onThinking` reports that phase.
+ * Stream answers from the local model. `onAnswer` fires once per finished
+ * line, so chips appear while it is still writing. A thinking model's
+ * <think> block is skipped; `onThinking` reports that phase.
  */
 export async function streamNiche(
   model: ModelId,
-  question: string,
-  avoid: string[],
+  { question, avoid, list, hint }: AskSpec,
   onAnswer: (answer: string) => void,
   onThinking: (thinking: boolean) => void,
   signal: AbortSignal,
@@ -155,16 +172,17 @@ export async function streamNiche(
 
   const system =
     'You help players of Krillion, a daily trivia game where the rarest valid answers score the most. ' +
-    'Give correct, real answers that very few people would think of. Skip the obvious ones. ' +
+    'Every answer must be a real, correct, specific name that fits the question exactly. ' +
     'Output only answers: one per line, no numbering, no explanations, no extra text.'
-  const user =
-    `Question: ${question}\n` +
-    (avoid.length ? `Too common, do not use: ${avoid.slice(0, 25).join(', ')}\n` : '') +
-    'Give 12 obscure but valid answers.'
+  const user = list
+    ? `Question: ${question}${hint ? ` (${hint})` : ''}\nList 40 different correct answers. Start with the obscure ones, then the well known ones.`
+    : `Question: ${question}\n` +
+      (avoid.length ? `Too common, do not use: ${avoid.slice(0, 25).join(', ')}\n` : '') +
+      'Give 15 correct answers that few people would think of.'
 
   const stream = await llm.chat.completions.create({
     stream: true,
-    temperature: 0.7,
+    temperature: list ? 0.4 : 0.7,
     max_tokens: spec.maxTokens,
     messages: [
       { role: 'system', content: system },
@@ -184,6 +202,7 @@ export async function streamNiche(
   }
 
   let text = ''
+  if (import.meta.env.DEV) (globalThis as { __krillRaw?: string }).__krillRaw = ''
   let thinking = spec.thinks
   onThinking(thinking)
   for await (const chunk of stream) {
@@ -191,7 +210,9 @@ export async function streamNiche(
       llm.interruptGenerate()
       return
     }
-    text += chunk.choices[0]?.delta?.content ?? ''
+    const piece = chunk.choices[0]?.delta?.content ?? ''
+    text += piece
+    if (import.meta.env.DEV) (globalThis as { __krillRaw?: string }).__krillRaw = ((globalThis as { __krillRaw?: string }).__krillRaw ?? '') + piece
     if (thinking) {
       const end = text.indexOf('</think>')
       if (end < 0) continue
@@ -205,4 +226,84 @@ export async function streamNiche(
   }
   onThinking(false)
   emit(text)
+}
+
+/**
+ * Judge real candidates one by one: "Ghana: yes". Small models stay accurate
+ * only in short batches and only when they write each name out (numbered
+ * replies lose track of which item is which), so batches are 12 items,
+ * processed in order, with each "yes" reported as soon as it is written.
+ */
+export const PICK_BATCH = 12
+
+export async function streamPick(
+  model: ModelId,
+  question: string,
+  candidates: string[],
+  onYes: (candidate: string) => void,
+  onBatch: (done: number) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const llm = await getEngine(model)
+  const spec = MODELS.find((m) => m.id === model) ?? MODELS[0]
+  const byKey = new Map(candidates.map((c) => [normalize(c), c]))
+  for (let start = 0; start < candidates.length; start += PICK_BATCH) {
+    if (signal.aborted) return
+    const batch = candidates.slice(start, start + PICK_BATCH)
+    const stream = await llm.chat.completions.create({
+      stream: true,
+      temperature: 0,
+      max_tokens: (spec.thinks ? 900 : 0) + batch.length * 14 + 24,
+      messages: [
+        { role: 'system', content: 'You are a strict fact checker. Judge each item on its own. Items you do not know are no.' },
+        {
+          role: 'user',
+          content:
+            `Question: ${question}\n\nFor each item, write the item, a colon, then yes or no. Say yes only if you are sure it fits every part of the question.\n\n` +
+            batch.join('\n'),
+        },
+      ],
+    })
+    let text = ''
+    const take = (line: string) => {
+      const m = line.match(/^\s*(?:[-*•]|\d+[.)])?\s*\**(.+?)\**\s*[:\-–—]\s*\**\s*(yes|no)\b/i)
+      if (!m || m[2].toLowerCase() !== 'yes') return
+      const hit = byKey.get(normalize(m[1]))
+      if (hit && batch.includes(hit)) onYes(hit)
+    }
+    for await (const chunk of stream) {
+      if (signal.aborted) {
+        llm.interruptGenerate()
+        return
+      }
+      text += chunk.choices[0]?.delta?.content ?? ''
+      if (spec.thinks && text.includes('<think>')) {
+        const end = text.indexOf('</think>')
+        if (end < 0) continue
+        text = text.slice(end + '</think>'.length)
+      }
+      const lines = text.split('\n')
+      text = lines.pop() ?? ''
+      lines.forEach(take)
+    }
+    take(text)
+    onBatch(Math.min(candidates.length, start + PICK_BATCH))
+  }
+}
+
+// Dev-only prompt lab: lets prompts be tried against the loaded model from the console.
+if (import.meta.env.DEV) {
+  ;(globalThis as { __krillLab?: unknown }).__krillLab = async (system: string, user: string, maxTokens = 400) => {
+    const llm = await getEngine(savedModel())
+    const t0 = performance.now()
+    const out = await llm.chat.completions.create({
+      temperature: 0.2,
+      max_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    })
+    return { ms: Math.round(performance.now() - t0), text: out.choices[0]?.message?.content ?? '' }
+  }
 }

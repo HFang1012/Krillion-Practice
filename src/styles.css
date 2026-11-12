@@ -836,3 +836,10 @@ h1 {
 .ask-bar span { display: block; height: 100%; background: var(--glow); transition: width 200ms; }
 .ask-pad { margin: 8px 10px 0; }
 .ask-load-detail { margin-top: 0; font-size: 15px; opacity: 0.8; }
+
+/* Rarity hint on checked answers: a coloured left edge */
+.ask-scored .chip-copy { border-left-width: 5px; }
+.ask-scored[data-rarity="deep"] .chip-copy { border-left-color: #b7c7e6; }
+.ask-scored[data-rarity="rare"] .chip-copy { border-left-color: #ff8b93; }
+.ask-scored[data-rarity="common"] .chip-copy { border-left-color: rgba(77, 227, 255, 0.5); }
+.ask-unchecked .chip-copy { border-style: dashed; opacity: 0.85; }
