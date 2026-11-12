@@ -1,14 +1,92 @@
+import type { WebWorkerMLCEngine } from '@mlc-ai/web-llm'
 import type { BankIndex, PromptMeta } from '../types'
 import { normalize } from './score'
 
 /**
- * Free, keyless, CORS-open LLM endpoint (Pollinations). The free tier allows
- * one reply per IP about every 45 seconds, so callers should check `waitMs`.
+ * Local AI: the model is downloaded once into the browser cache and runs on
+ * this device's GPU (WebGPU). Nothing is sent to a server after the download.
  */
-const ENDPOINT = 'https://text.pollinations.ai/openai'
-const MODEL = 'openai-fast'
-export const COOLDOWN_MS = 45_000
-const LAST_KEY = 'krillion-ai-last'
+export const MODELS = [
+  {
+    id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
+    label: 'Fast',
+    detail: 'Qwen 2.5 1.5B · about 1 GB',
+    thinks: false,
+    maxTokens: 220,
+  },
+  {
+    id: 'DeepSeek-R1-Distill-Qwen-7B-q4f16_1-MLC',
+    label: 'DeepSeek',
+    detail: 'DeepSeek R1 7B · about 4.5 GB, slower, thinks first',
+    thinks: true,
+    maxTokens: 1400,
+  },
+] as const
+
+export type ModelId = (typeof MODELS)[number]['id']
+const MODEL_KEY = 'krillion-ai-model'
+
+export function savedModel(): ModelId {
+  try {
+    const saved = localStorage.getItem(MODEL_KEY)
+    if (MODELS.some((model) => model.id === saved)) return saved as ModelId
+  } catch {
+    // storage blocked
+  }
+  return MODELS[0].id
+}
+
+export function saveModel(id: ModelId) {
+  try {
+    localStorage.setItem(MODEL_KEY, id)
+  } catch {
+    // storage blocked
+  }
+}
+
+export function hasWebGpu(): boolean {
+  return typeof navigator !== 'undefined' && 'gpu' in navigator
+}
+
+export type LoadProgress = { progress: number; text: string }
+
+let engine: Promise<WebWorkerMLCEngine> | null = null
+let engineModel: ModelId | null = null
+const listeners = new Set<(p: LoadProgress) => void>()
+
+/** Load (or reuse) the engine. The first call downloads the model; later visits read it from cache. */
+export function getEngine(model: ModelId, onProgress?: (p: LoadProgress) => void): Promise<WebWorkerMLCEngine> {
+  if (onProgress) listeners.add(onProgress)
+  if (engine && engineModel === model) return engine
+  if (!hasWebGpu()) {
+    return Promise.reject(new Error('This browser has no WebGPU. Use recent Chrome, Edge, or Safari to run the local AI.'))
+  }
+
+  const previous = engine
+  engineModel = model
+  engine = (async () => {
+    if (previous) {
+      // Free the GPU memory held by the other model.
+      await previous.then((old) => old.unload()).catch(() => undefined)
+    }
+    const { CreateWebWorkerMLCEngine } = await import('@mlc-ai/web-llm')
+    const worker = new Worker(new URL('./llm.worker.ts', import.meta.url), { type: 'module' })
+    return CreateWebWorkerMLCEngine(worker, model, {
+      initProgressCallback: (report) => {
+        for (const listener of listeners) listener({ progress: report.progress, text: report.text })
+      },
+    })
+  })()
+  engine.catch(() => {
+    engine = null
+    engineModel = null
+  })
+  return engine
+}
+
+export function stopListening(onProgress: (p: LoadProgress) => void) {
+  listeners.delete(onProgress)
+}
 
 const STOP = new Set(
   'a an the of to in on for and or is are be that this with by from at as name give something someone thing type kind'.split(
@@ -39,6 +117,8 @@ export function findPrompt(index: BankIndex, query: string): { meta: PromptMeta;
       for (const word of q) if (p.has(word)) shared += 1
       // Dice coefficient: rewards overlap, penalises size mismatch both ways.
       score = (2 * shared) / (q.size + p.size)
+      // A word you typed that the question lacks ("from Africa") is a different question.
+      if (shared < q.size) score = Math.min(score, 0.6)
     }
     if (!best || score > best.score || (score === best.score && meta.date > best.meta.date)) {
       best = { meta, score }
@@ -47,112 +127,82 @@ export function findPrompt(index: BankIndex, query: string): { meta: PromptMeta;
   return best
 }
 
-export function waitMs(): number {
-  try {
-    const last = Number(localStorage.getItem(LAST_KEY) ?? 0)
-    return Math.max(0, last + COOLDOWN_MS - Date.now())
-  } catch {
-    return 0
-  }
-}
-
-function markCall() {
-  try {
-    localStorage.setItem(LAST_KEY, String(Date.now()))
-  } catch {
-    // storage blocked; the server limit still applies
-  }
-}
-
-export class RateLimited extends Error {
-  constructor(public retryMs: number) {
-    super('rate limited')
-  }
-}
-
 function cleanLine(line: string): string {
   return line
     .replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '')
     .replace(/\*\*/g, '')
     .replace(/\s+[-–—:(].*$/, '')
+    .replace(/[.,;]+$/, '')
     .trim()
 }
 
 /**
- * Stream niche answers. `onAnswer` fires once per finished line, so chips
- * appear while the model is still writing.
+ * Stream niche answers from the local model. `onAnswer` fires once per
+ * finished line, so chips appear while it is still writing. A thinking
+ * model's <think> block is skipped; `onThinking` reports that phase.
  */
 export async function streamNiche(
+  model: ModelId,
   question: string,
   avoid: string[],
   onAnswer: (answer: string) => void,
+  onThinking: (thinking: boolean) => void,
   signal: AbortSignal,
 ): Promise<void> {
+  const spec = MODELS.find((m) => m.id === model) ?? MODELS[0]
+  const llm = await getEngine(model)
+  if (signal.aborted) return
+
   const system =
     'You help players of Krillion, a daily trivia game where the rarest valid answers score the most. ' +
     'Give correct, real answers that very few people would think of. Skip the obvious ones. ' +
     'Output only answers: one per line, no numbering, no explanations, no extra text.'
   const user =
     `Question: ${question}\n` +
-    (avoid.length ? `Too common, do not use: ${avoid.slice(0, 40).join(', ')}\n` : '') +
+    (avoid.length ? `Too common, do not use: ${avoid.slice(0, 25).join(', ')}\n` : '') +
     'Give 12 obscure but valid answers.'
 
-  markCall()
-  const response = await fetch(ENDPOINT, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model: MODEL,
-      stream: true,
-      reasoning_effort: 'low',
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-    }),
-    signal,
+  const stream = await llm.chat.completions.create({
+    stream: true,
+    temperature: 0.7,
+    max_tokens: spec.maxTokens,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
   })
 
-  if (response.status === 402 || response.status === 429) {
-    const body = await response.text()
-    const seconds = Number(body.match(/Retry after (\d+)s/)?.[1] ?? response.headers.get('retry-after') ?? 20)
-    throw new RateLimited((seconds + 1) * 1000)
-  }
-  if (!response.ok || !response.body) throw new Error(`The AI is unavailable right now (${response.status}).`)
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let sse = ''
-  let text = ''
   const seen = new Set<string>()
-
   const emit = (line: string) => {
     const answer = cleanLine(line)
     const key = normalize(answer)
-    if (!answer || answer.length > 60 || seen.has(key)) return
+    if (!answer || !key || answer.length > 48 || seen.has(key)) return
+    // Small models drift into descriptions ("Xylophone-like instrument called a ..."); keep names only.
+    if (key.split(' ').length > 5 || /\blike\b|\bcalled\b|\btype of\b|\bkind of\b/.test(key.replace(/-/g, ' '))) return
     seen.add(key)
     onAnswer(answer)
   }
 
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) break
-    sse += decoder.decode(value, { stream: true })
-    const events = sse.split('\n')
-    sse = events.pop() ?? ''
-    for (const event of events) {
-      const data = event.replace(/^data:\s*/, '').trim()
-      if (!data || data === '[DONE]' || !event.startsWith('data:')) continue
-      try {
-        const delta = JSON.parse(data).choices?.[0]?.delta?.content
-        if (typeof delta === 'string') text += delta
-      } catch {
-        // partial or non-JSON keepalive
-      }
+  let text = ''
+  let thinking = spec.thinks
+  onThinking(thinking)
+  for await (const chunk of stream) {
+    if (signal.aborted) {
+      llm.interruptGenerate()
+      return
+    }
+    text += chunk.choices[0]?.delta?.content ?? ''
+    if (thinking) {
+      const end = text.indexOf('</think>')
+      if (end < 0) continue
+      text = text.slice(end + '</think>'.length)
+      thinking = false
+      onThinking(false)
     }
     const lines = text.split('\n')
     text = lines.pop() ?? ''
     lines.forEach(emit)
   }
+  onThinking(false)
   emit(text)
 }

@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import type { BankIndex, PromptMeta, Tier } from '../types'
 import { loadShard } from '../lib/bank'
-import { findPrompt, RateLimited, streamNiche, waitMs } from '../lib/askAi'
+import {
+  findPrompt,
+  getEngine,
+  hasWebGpu,
+  MODELS,
+  saveModel,
+  savedModel,
+  stopListening,
+  streamNiche,
+  type LoadProgress,
+  type ModelId,
+} from '../lib/askAi'
 import { publicUrl } from '../lib/publicUrl'
 import { TIER_META } from '../lib/tiers'
 import { CopyChip } from './CopyChip'
@@ -11,74 +22,105 @@ const SAME_QUESTION = 0.72
 const NICHE_TIERS: Tier[] = ['krillion', 'deepcut', 'rare']
 
 type BankHit = { meta: PromptMeta; groups: { tier: Tier; answers: string[] }[]; common: string[] }
+type EngineState = 'idle' | 'loading' | 'ready' | 'error'
+
+/** WebLLM's progress text, trimmed to the useful part ("Fetching param cache[12/27]: 410MB fetched..."). */
+function loadDetail(text: string): string {
+  return text.replace(/\. It can take a while.*$/i, '').slice(0, 110)
+}
 
 export function AskKrill({ index }: { index: BankIndex }) {
   const [open, setOpen] = useState(false)
+  const [model, setModel] = useState<ModelId>(savedModel)
+  const [engineState, setEngineState] = useState<EngineState>('idle')
+  const [progress, setProgress] = useState<LoadProgress | null>(null)
+  const [engineError, setEngineError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [asked, setAsked] = useState('')
   const [bank, setBank] = useState<BankHit | null>(null)
   const [ai, setAi] = useState<string[]>([])
-  const [aiState, setAiState] = useState<'idle' | 'waiting' | 'streaming' | 'done' | 'error'>('idle')
+  const [aiState, setAiState] = useState<'idle' | 'thinking' | 'streaming' | 'done' | 'error'>('idle')
   const [aiError, setAiError] = useState<string | null>(null)
-  const [countdown, setCountdown] = useState(0)
   const abort = useRef<AbortController | null>(null)
-  const timer = useRef<number | undefined>(undefined)
   const inputRef = useRef<HTMLInputElement>(null)
+  const pendingAsk = useRef<{ question: string; avoid: string[] } | null>(null)
+  // Read by runAi, which can be called from inside the load promise (stale state there).
+  const engineRef = useRef<{ state: EngineState; error: string | null }>({ state: 'idle', error: null })
+  engineRef.current = { state: engineState, error: engineError }
 
   useEffect(() => {
     if (open) inputRef.current?.focus()
   }, [open])
 
-  useEffect(
-    () => () => {
-      abort.current?.abort()
-      window.clearInterval(timer.current)
-    },
-    [],
-  )
+  useEffect(() => () => abort.current?.abort(), [])
+
+  // Start loading the model as soon as the panel opens, so it is warm by the time you ask.
+  useEffect(() => {
+    if (!open) return
+    let live = true
+    const onProgress = (report: LoadProgress) => {
+      if (live) setProgress(report)
+    }
+    setEngineState('loading')
+    setEngineError(null)
+    getEngine(model, onProgress)
+      .then(() => {
+        if (!live) return
+        setEngineState('ready')
+        engineRef.current = { state: 'ready', error: null }
+        const next = pendingAsk.current
+        pendingAsk.current = null
+        if (next) runAi(next.question, next.avoid)
+      })
+      .catch((err: unknown) => {
+        if (!live) return
+        setEngineState('error')
+        setEngineError(err instanceof Error ? err.message : 'The local model could not start.')
+      })
+    return () => {
+      live = false
+      stopListening(onProgress)
+    }
+  }, [open, model])
 
   function runAi(question: string, avoid: string[]) {
     abort.current?.abort()
-    window.clearInterval(timer.current)
     setAi([])
     setAiError(null)
-
-    const start = () => {
-      const controller = new AbortController()
-      abort.current = controller
-      setAiState('streaming')
-      streamNiche(question, avoid, (answer) => setAi((prev) => [...prev, answer]), controller.signal)
-        .then(() => {
-          if (!controller.signal.aborted) setAiState('done')
-        })
-        .catch((err: unknown) => {
-          if (controller.signal.aborted) return
-          if (err instanceof RateLimited) wait(err.retryMs)
-          else {
-            setAiState('error')
-            setAiError(err instanceof Error ? err.message : 'The AI did not answer.')
-          }
-        })
+    const engineNow = engineRef.current
+    if (engineNow.state === 'error') {
+      setAiState('error')
+      setAiError(engineNow.error)
+      return
     }
-
-    // Free tier: one reply per ~45s. Count down, then fire on its own.
-    const wait = (ms: number) => {
-      setAiState('waiting')
-      const until = Date.now() + ms
-      setCountdown(Math.ceil(ms / 1000))
-      window.clearInterval(timer.current)
-      timer.current = window.setInterval(() => {
-        const left = until - Date.now()
-        if (left <= 0) {
-          window.clearInterval(timer.current)
-          start()
-        } else setCountdown(Math.ceil(left / 1000))
-      }, 250)
+    if (engineNow.state !== 'ready') {
+      // Model still downloading: queue the question and run it the moment it's ready.
+      pendingAsk.current = { question, avoid }
+      setAiState('thinking')
+      return
     }
-
-    const pending = waitMs()
-    if (pending > 0) wait(pending)
-    else start()
+    const controller = new AbortController()
+    abort.current = controller
+    setAiState('thinking')
+    streamNiche(
+      model,
+      question,
+      avoid,
+      (answer) => {
+        setAiState('streaming')
+        setAi((prev) => [...prev, answer])
+      },
+      (thinking) => setAiState(thinking ? 'thinking' : 'streaming'),
+      controller.signal,
+    )
+      .then(() => {
+        if (!controller.signal.aborted) setAiState('done')
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return
+        setAiState('error')
+        setAiError(err instanceof Error ? err.message : 'The local model did not answer.')
+      })
   }
 
   async function ask(event?: React.FormEvent) {
@@ -100,16 +142,31 @@ export function AskKrill({ index }: { index: BankIndex }) {
         const common = [...(shard.tiers.schooler ?? []), ...(shard.tiers.plankton ?? [])]
         setBank({ meta: hit.meta, groups, common })
         abort.current?.abort()
-        window.clearInterval(timer.current)
+        pendingAsk.current = null
         setAi([])
         setAiState('idle')
         return
       } catch {
-        // sheet failed to load; ask the AI instead
+        // sheet failed to load; ask the model instead
       }
     }
     runAi(question, [])
   }
+
+  function pickModel(id: ModelId) {
+    if (id === model) return
+    abort.current?.abort()
+    pendingAsk.current = null
+    setAi([])
+    setAiState('idle')
+    setProgress(null)
+    setEngineState('loading')
+    engineRef.current = { state: 'loading', error: null }
+    saveModel(id)
+    setModel(id)
+  }
+
+  const pct = Math.round((progress?.progress ?? 0) * 100)
 
   return (
     <div className={open ? 'ask-krill is-open' : 'ask-krill'}>
@@ -122,6 +179,38 @@ export function AskKrill({ index }: { index: BankIndex }) {
               ✕
             </button>
           </header>
+
+          <div className="ask-models" role="radiogroup" aria-label="Local model">
+            {MODELS.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                role="radio"
+                aria-checked={m.id === model}
+                className={m.id === model ? 'ask-model is-on' : 'ask-model'}
+                onClick={() => pickModel(m.id)}
+                title={m.detail}
+              >
+                {m.label}
+              </button>
+            ))}
+            <span className="ask-model-detail">{MODELS.find((m) => m.id === model)?.detail}</span>
+          </div>
+
+          {engineState === 'loading' ? (
+            <div className="ask-load">
+              <div className="ask-bar" aria-hidden="true">
+                <span style={{ width: `${pct}%` }} />
+              </div>
+              <p className="ask-note">
+                {pct < 100 ? `Loading the local model · ${pct}%` : 'Starting the local model'}
+                {' · downloads once, then it is cached'}
+              </p>
+              {progress?.text ? <p className="ask-note ask-load-detail">{loadDetail(progress.text)}</p> : null}
+            </div>
+          ) : null}
+          {engineState === 'error' ? <p className="error ask-pad">{engineError}</p> : null}
+
           <form className="ask-form" onSubmit={ask}>
             <input
               ref={inputRef}
@@ -138,7 +227,8 @@ export function AskKrill({ index }: { index: BankIndex }) {
           <div className="ask-body">
             {!asked ? (
               <p className="ask-note">
-                Paste a Krillion question. Past questions come straight from the dictionary. New ones go to a free AI.
+                Paste a Krillion question. Past questions come straight from the dictionary. New ones go to an AI
+                that runs on this device{hasWebGpu() ? '' : ' (needs WebGPU)'}.
               </p>
             ) : null}
 
@@ -177,11 +267,15 @@ export function AskKrill({ index }: { index: BankIndex }) {
             {aiState !== 'idle' ? (
               <section className="ask-tier">
                 <h3 className="tier-kicker" data-tier="schooler">
-                  AI ideas {aiState === 'streaming' ? '· thinking' : ''}
+                  AI ideas
+                  {aiState === 'thinking'
+                    ? engineState === 'loading'
+                      ? ' · waiting for the model'
+                      : ' · thinking'
+                    : aiState === 'streaming'
+                      ? ' · writing'
+                      : ''}
                 </h3>
-                {aiState === 'waiting' ? (
-                  <p className="ask-note">Free AI cooldown. Asking in {countdown}s.</p>
-                ) : null}
                 {aiState === 'error' ? <p className="error">{aiError}</p> : null}
                 {ai.length ? (
                   <ul className="chips">
@@ -192,7 +286,10 @@ export function AskKrill({ index }: { index: BankIndex }) {
                     ))}
                   </ul>
                 ) : null}
-                {aiState === 'done' ? (
+                {aiState === 'done' && !ai.length ? (
+                  <p className="ask-note">No answers came back. Try asking again.</p>
+                ) : null}
+                {aiState === 'done' && ai.length ? (
                   <p className="ask-note">AI ideas are guesses and are not checked against the sheet.</p>
                 ) : null}
               </section>

@@ -19,7 +19,6 @@ function AnswerSheet({ meta, shard }: { meta: PromptMeta; shard: Shard }) {
       <p className="dive-label">
         Dive #{meta.dive} · {meta.date} · {meta.count.toLocaleString('en-US')} answers
       </p>
-      <h2 className="dict-question">{meta.text}</h2>
       <p className="dictionary-note dict-copy-hint">Click any answer to copy it.</p>
       {groups.map((group) => (
         <section key={group.tier} className="dict-tier">
@@ -62,8 +61,8 @@ export function Dictionary({
   }, [index.prompts, needle])
   const visible = matches.slice(0, MATCH_LIMIT)
   const extra = matches.length - visible.length
-  // The question you picked, or else the best match, so answers show as soon as you type.
-  const selected = matches.find((prompt) => prompt.id === selectedId) ?? matches[0] ?? null
+  // Only a question you clicked is open. Clicking it again closes it.
+  const selected = matches.find((prompt) => prompt.id === selectedId) ?? null
   const selectedKey = selected?.id ?? null
 
   useEffect(() => {
@@ -113,37 +112,57 @@ export function Dictionary({
 
         {!needle ? <p className="dictionary-note">Type a question to see its answers.</p> : null}
         {needle && visible.length === 0 ? <p className="dictionary-note">No questions match.</p> : null}
-        {error ? <p className="error">{error}</p> : null}
-        {loading ? <p className="dictionary-note">Loading the sheet.</p> : null}
-        {selected && shard ? <AnswerSheet meta={selected} shard={shard} /> : null}
-        {visible.length > 1 ? (
+        {selected ? (
+          <div className="dict-open">
+            <button
+              type="button"
+              className="dict-match is-selected"
+              onClick={() => setSelectedId(null)}
+              aria-expanded="true"
+              title="Close this question"
+            >
+              <span className="dict-text">{selected.text}</span>
+              <span className="dict-meta">
+                Dive #{selected.dive} · {selected.date} · click to close
+              </span>
+            </button>
+            {error ? <p className="error">{error}</p> : null}
+            {loading ? <p className="dictionary-note">Loading the sheet.</p> : null}
+            {shard ? <AnswerSheet meta={selected} shard={shard} /> : null}
+          </div>
+        ) : null}
+        {visible.some((prompt) => prompt.id !== selected?.id) ? (
           <>
-            <p className="dictionary-note dict-others">Other questions</p>
+            {selected ? <p className="dictionary-note dict-others">Other questions</p> : null}
             <ul className="dict-matches">
-              {visible.filter((prompt) => prompt.id !== selected?.id).map((prompt) => (
-                <li key={prompt.id}>
-                  <button
-                    type="button"
-                    className="dict-match"
-                    onClick={() => {
-                      setSelectedId(prompt.id)
-                      window.scrollTo({ top: 0, behavior: 'smooth' })
-                    }}
-                  >
-                    <span className="dict-text">{prompt.text}</span>
-                    <span className="dict-meta">
-                      Dive #{prompt.dive} · {prompt.date}
-                    </span>
-                  </button>
-                </li>
-              ))}
+              {visible
+                .filter((prompt) => prompt.id !== selected?.id)
+                .map((prompt) => (
+                  <li key={prompt.id}>
+                    <button
+                      type="button"
+                      className="dict-match"
+                      aria-expanded="false"
+                      onClick={() => {
+                        setSelectedId(prompt.id)
+                        window.scrollTo({ top: 0, behavior: 'smooth' })
+                      }}
+                    >
+                      <span className="dict-text">{prompt.text}</span>
+                      <span className="dict-meta">
+                        Dive #{prompt.dive} · {prompt.date}
+                      </span>
+                    </button>
+                  </li>
+                ))}
             </ul>
             {extra > 0 ? (
-              <p className="dictionary-note">{extra.toLocaleString('en-US')} more {extra === 1 ? 'match' : 'matches'}. Narrow the search.</p>
+              <p className="dictionary-note">
+                {extra.toLocaleString('en-US')} more {extra === 1 ? 'match' : 'matches'}. Narrow the search.
+              </p>
             ) : null}
           </>
         ) : null}
-
       </main>
     </div>
   )

@@ -739,7 +739,7 @@ h1 {
 }
 .chip-copy:hover { border-color: var(--glow); background: rgba(77, 227, 255, 0.1); }
 .chip-copy:active { transform: translate(1px, 1px); }
-.chip-copy.is-copied { border-color: var(--gold); background: rgba(255, 209, 102, 0.14); }
+.chip-copy.is-copied { border-color: rgba(255, 209, 102, 0.6); background: rgba(255, 209, 102, 0.06); }
 .chip-copy.is-failed { border-color: #ff8b93; }
 .chip-flag {
   position: absolute;
@@ -747,14 +747,19 @@ h1 {
   bottom: calc(100% + 4px);
   transform: translateX(-50%);
   padding: 1px 6px;
-  background: var(--gold);
-  color: var(--abyss);
+  background: rgba(255, 209, 102, 0.28);
+  border: 1px solid rgba(255, 209, 102, 0.55);
+  color: #ffe9a8;
+  backdrop-filter: blur(2px);
   font-size: 16px;
   white-space: nowrap;
   pointer-events: none;
   z-index: 2;
 }
 .dict-copy-hint { margin: 0 0 4px; font-size: 17px; }
+.dict-open { margin-top: 18px; }
+.dict-open .dict-match.is-selected { border-top-color: var(--glow); }
+.dict-open .dict-sheet { margin-top: 12px; }
 .dict-others { margin-top: 32px; letter-spacing: 0.08em; text-transform: uppercase; font-size: 16px; }
 
 /* Niche finder, bottom right */
@@ -813,3 +818,21 @@ h1 {
 .ask-tier .tier-kicker { margin: 0 0 6px; font-size: 18px; }
 .ask-tier .chip-copy { font-size: 20px; padding: 4px 8px; }
 .ask-more { margin-top: 14px; }
+
+/* Local model picker and download bar */
+.ask-models { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px 0; }
+.ask-model {
+  padding: 2px 10px;
+  background: transparent;
+  border: 2px solid rgba(125, 147, 184, 0.45);
+  font-size: 18px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.ask-model.is-on { border-color: var(--pink); color: var(--pink); background: rgba(255, 93, 143, 0.12); }
+.ask-model-detail { color: var(--muted); font-size: 16px; }
+.ask-load { padding: 8px 10px 0; }
+.ask-bar { height: 8px; border: 2px solid rgba(77, 227, 255, 0.45); }
+.ask-bar span { display: block; height: 100%; background: var(--glow); transition: width 200ms; }
+.ask-pad { margin: 8px 10px 0; }
+.ask-load-detail { margin-top: 0; font-size: 15px; opacity: 0.8; }
