@@ -8,7 +8,7 @@ export function useBank() {
 
   useEffect(() => {
     let cancel = false
-    fetch(publicUrl('bank/index.json'))
+    fetch(publicUrl('bank/index.json'), { cache: 'no-cache' })
       .then(async (response) => {
         if (!response.ok) throw new Error('The answer bank is not built yet.')
         return (await response.json()) as BankIndex

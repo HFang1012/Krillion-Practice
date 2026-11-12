@@ -8,6 +8,13 @@ export function Home({ index, onNavigate }: { index: BankIndex; onNavigate: (has
       <p className="eyebrow">KRILLION</p>
       <h1>the practice dive</h1>
       <p className="tagline">one in a krillion.</p>
+      <aside className="fair-play" role="note">
+        <p className="fair-play-title">⚠ Play fair</p>
+        <p>
+          This site exists to help you learn and practice. Please don&rsquo;t use it to look up answers during a live
+          dive on krillion.io. That is dishonest to every other player, and accounts caught doing it can be banned.
+        </p>
+      </aside>
       <div className="mode-grid">
         <button type="button" className="mode-card" onClick={() => onNavigate('#/learn')}>
           <img className="sprite krill" src={publicUrl('art/krillion.png')} alt="" width={72} height={72} />

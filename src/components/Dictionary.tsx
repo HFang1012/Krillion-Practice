@@ -4,6 +4,7 @@ import { TIERS } from '../types'
 import { loadShard } from '../lib/bank'
 import { TIER_META } from '../lib/tiers'
 import { TopBar } from './TopBar'
+import { CopyChip } from './CopyChip'
 
 const MATCH_LIMIT = 12
 
@@ -19,6 +20,7 @@ function AnswerSheet({ meta, shard }: { meta: PromptMeta; shard: Shard }) {
         Dive #{meta.dive} · {meta.date} · {meta.count.toLocaleString('en-US')} answers
       </p>
       <h2 className="dict-question">{meta.text}</h2>
+      <p className="dictionary-note dict-copy-hint">Click any answer to copy it.</p>
       {groups.map((group) => (
         <section key={group.tier} className="dict-tier">
           <h3 className="tier-kicker" data-tier={group.tier}>
@@ -27,7 +29,9 @@ function AnswerSheet({ meta, shard }: { meta: PromptMeta; shard: Shard }) {
           </h3>
           <ul className="chips">
             {group.answers.map((answer, index) => (
-              <li key={`${group.tier}-${answer}-${index}`}>{answer}</li>
+              <li key={`${group.tier}-${answer}-${index}`}>
+                <CopyChip answer={answer} />
+              </li>
             ))}
           </ul>
         </section>
@@ -58,10 +62,12 @@ export function Dictionary({
   }, [index.prompts, needle])
   const visible = matches.slice(0, MATCH_LIMIT)
   const extra = matches.length - visible.length
-  const selected = matches.find((prompt) => prompt.id === selectedId) ?? null
+  // The question you picked, or else the best match, so answers show as soon as you type.
+  const selected = matches.find((prompt) => prompt.id === selectedId) ?? matches[0] ?? null
+  const selectedKey = selected?.id ?? null
 
   useEffect(() => {
-    if (!selectedId || !selected) {
+    if (!selectedKey) {
       setShard(null)
       setError(null)
       setLoading(false)
@@ -71,7 +77,7 @@ export function Dictionary({
     setLoading(true)
     setError(null)
     setShard(null)
-    loadShard(selectedId)
+    loadShard(selectedKey)
       .then((data) => {
         if (!cancel) setShard(data)
       })
@@ -84,7 +90,7 @@ export function Dictionary({
     return () => {
       cancel = true
     }
-  }, [selectedId, selected])
+  }, [selectedKey])
 
   return (
     <div className="screen">
@@ -107,16 +113,22 @@ export function Dictionary({
 
         {!needle ? <p className="dictionary-note">Type a question to see its answers.</p> : null}
         {needle && visible.length === 0 ? <p className="dictionary-note">No questions match.</p> : null}
-        {visible.length ? (
+        {error ? <p className="error">{error}</p> : null}
+        {loading ? <p className="dictionary-note">Loading the sheet.</p> : null}
+        {selected && shard ? <AnswerSheet meta={selected} shard={shard} /> : null}
+        {visible.length > 1 ? (
           <>
+            <p className="dictionary-note dict-others">Other questions</p>
             <ul className="dict-matches">
-              {visible.map((prompt) => (
+              {visible.filter((prompt) => prompt.id !== selected?.id).map((prompt) => (
                 <li key={prompt.id}>
                   <button
                     type="button"
-                    className={prompt.id === selected?.id ? 'dict-match is-selected' : 'dict-match'}
-                    onClick={() => setSelectedId(prompt.id)}
-                    aria-pressed={prompt.id === selected?.id}
+                    className="dict-match"
+                    onClick={() => {
+                      setSelectedId(prompt.id)
+                      window.scrollTo({ top: 0, behavior: 'smooth' })
+                    }}
                   >
                     <span className="dict-text">{prompt.text}</span>
                     <span className="dict-meta">
@@ -127,14 +139,11 @@ export function Dictionary({
               ))}
             </ul>
             {extra > 0 ? (
-              <p className="dictionary-note">{extra.toLocaleString('en-US')} more match. Narrow the search.</p>
+              <p className="dictionary-note">{extra.toLocaleString('en-US')} more {extra === 1 ? 'match' : 'matches'}. Narrow the search.</p>
             ) : null}
           </>
         ) : null}
 
-        {error ? <p className="error">{error}</p> : null}
-        {loading ? <p className="dictionary-note">Loading the sheet.</p> : null}
-        {selected && shard ? <AnswerSheet meta={selected} shard={shard} /> : null}
       </main>
     </div>
   )

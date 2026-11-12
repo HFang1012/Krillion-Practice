@@ -5,6 +5,7 @@ import { Learn } from './components/Learn'
 import { Practice } from './components/Practice'
 import { Stats } from './components/Stats'
 import { Descending } from './components/Descending'
+import { AskKrill } from './components/AskKrill'
 import { useBank } from './hooks/useBank'
 import { loadLog, saveLog } from './lib/history'
 import { publicUrl } from './lib/publicUrl'
@@ -129,6 +130,7 @@ export function App() {
         <span />
       </div>
       {body}
+      {index && index.prompts.length ? <AskKrill index={index} /> : null}
     </div>
   )
 }

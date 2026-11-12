@@ -131,13 +131,26 @@ function parseDive(html, date) {
 
 function extractDates(html) {
   const raw = html.match(/id="krilling-practice-data">([\s\S]*?)<\/script>/)?.[1]
-  if (!raw) throw new Error('Date list missing from the archive page')
+  if (!raw) return []
   const data = JSON.parse(raw)
-  if (!Array.isArray(data.dates) || data.dates.length < 7) {
-    throw new Error('Date list looks incomplete')
-  }
-  return data.dates.map((entry) => entry.date)
+  return Array.isArray(data.dates) ? data.dates.map((entry) => entry.date) : []
 }
+
+function linkedDates(html) {
+  return [...html.matchAll(/krillion-answers\/(\d{4}-\d{2}-\d{2})\//g)].map((m) => m[1])
+}
+
+/** Every calendar day from the first dive through today (UTC and a day ahead for time zones). */
+function calendarDates(from) {
+  const out = []
+  const end = new Date(Date.now() + 14 * 3600 * 1000).toISOString().slice(0, 10)
+  for (let d = new Date(`${from}T00:00:00Z`); d.toISOString().slice(0, 10) <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    out.push(d.toISOString().slice(0, 10))
+  }
+  return out
+}
+
+class NotPublished extends Error {}
 
 async function fetchText(url) {
   let lastError = new Error(`Failed to fetch ${url}`)
@@ -147,9 +160,11 @@ async function fetchText(url) {
         headers: { 'user-agent': 'Mozilla/5.0 KrillionPractice/1.0' },
         signal: AbortSignal.timeout(180000),
       })
+      if (response.status === 404) throw new NotPublished(`404 ${url}`)
       if (!response.ok) throw new Error(`${response.status} ${url}`)
       return await response.text()
     } catch (error) {
+      if (error instanceof NotPublished) throw error
       lastError = error instanceof Error ? error : lastError
       await new Promise((resolve) => setTimeout(resolve, 400 * attempt))
     }
@@ -157,9 +172,17 @@ async function fetchText(url) {
   throw lastError
 }
 
+/** The newest two days are still collecting answers, so they are always refetched. */
+const FRESH_DAYS = 2
+
+function isRecent(date) {
+  const ageMs = Date.now() - Date.parse(`${date}T00:00:00Z`)
+  return ageMs < FRESH_DAYS * 24 * 3600 * 1000 + 14 * 3600 * 1000
+}
+
 async function loadPage(date) {
   const file = path.join(CACHE, `${date}.html`)
-  if (!refresh && fs.existsSync(file) && fs.statSync(file).size > 500) {
+  if (!refresh && !isRecent(date) && fs.existsSync(file) && fs.statSync(file).size > 500) {
     return fs.readFileSync(file, 'utf8')
   }
   const html = await fetchText(`${ORIGIN}/${date}/`)
@@ -182,10 +205,23 @@ async function mapPool(items, limit, fn) {
 
 async function main() {
   fs.mkdirSync(PROMPTS_DIR, { recursive: true })
-  const seed = await loadPage(only ?? '2026-07-16')
-  const dates = only ? [only] : extractDates(seed)
+  let dates
+  if (only) {
+    dates = [only]
+  } else {
+    // Union of three sources so a day is never skipped: the seed page's embedded
+    // date list, every link on the archive index, and every calendar day since dive #1.
+    const seed = await fetchText(`${ORIGIN}/2026-07-16/`)
+    const archive = await fetchText(`${ORIGIN}/`).catch(() => '')
+    const listed = new Set([...extractDates(seed), ...linkedDates(archive)])
+    if (listed.size < 7) throw new Error('Date list looks incomplete')
+    dates = [...new Set([...listed, ...calendarDates('2026-07-16')])].sort()
+    const unlisted = dates.filter((date) => !listed.has(date))
+    if (unlisted.length) console.log(`Also checking ${unlisted.length} unlisted days: ${unlisted.join(', ')}`)
+  }
   const results = new Array(dates.length)
   const failures = []
+  const unpublished = []
 
   await mapPool(dates, 3, async (date, index) => {
     const started = Date.now()
@@ -219,6 +255,10 @@ async function main() {
       console.log(`[${index + 1}/${dates.length}] ${date} dive ${parsed.dive} · ${answers} answers · ${seconds}s`)
       for (const warning of parsed.warnings) console.warn(`  ! ${warning}`)
     } catch (error) {
+      if (error instanceof NotPublished) {
+        unpublished.push(date)
+        return
+      }
       const message = error instanceof Error ? error.message : String(error)
       failures.push(`${date}: ${message}`)
       console.error(`[${index + 1}/${dates.length}] ${date} FAILED ${message}`)
@@ -246,6 +286,17 @@ async function main() {
   if (known) {
     console.log(`Check gem: ${known.id} → ${known.gems.join(', ') || '(none)'}`)
   }
+
+  if (unpublished.length) {
+    console.warn(`Not published at the source yet: ${unpublished.join(', ')}`)
+  }
+  const diveNumbers = new Set(prompts.map((prompt) => prompt.dive))
+  const maxDive = Math.max(0, ...diveNumbers)
+  const missingDives = []
+  for (let dive = 1; dive <= maxDive; dive += 1) if (!diveNumbers.has(dive)) missingDives.push(dive)
+  index.missingDives = missingDives
+  fs.writeFileSync(INDEX_PATH, JSON.stringify(index))
+  if (missingDives.length) console.warn(`Missing dives (source has no page): #${missingDives.join(', #')}`)
 
   if (failures.length) {
     console.error(`${failures.length} dates failed`)
