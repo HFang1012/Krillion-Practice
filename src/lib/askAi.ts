@@ -57,38 +57,83 @@ export function hasWebGpu(): boolean {
 
 export type LoadProgress = { progress: number; text: string }
 
-let engine: Promise<WebWorkerMLCEngine> | null = null
-let engineModel: ModelId | null = null
+type Loaded = { model: ModelId; worker: Worker; engine: Promise<WebWorkerMLCEngine>; cancel: (err: Error) => void }
+
+let current: Loaded | null = null
 const listeners = new Set<(p: LoadProgress) => void>()
 
-/** Load (or reuse) the engine. The first call downloads the model; later visits read it from cache. */
+/**
+ * Load (or reuse) the engine. The first call downloads the model; later visits read it from cache.
+ * Switching models stops the old worker at once, even mid-download, so the new one starts right away
+ * (each worker holds its own GPU memory, which is freed when it is terminated).
+ */
 export function getEngine(model: ModelId, onProgress?: (p: LoadProgress) => void): Promise<WebWorkerMLCEngine> {
   if (onProgress) listeners.add(onProgress)
-  if (engine && engineModel === model) return engine
+  if (current && current.model === model) return current.engine
   if (!hasWebGpu()) {
     return Promise.reject(new Error('This browser has no WebGPU. Use recent Chrome, Edge, or Safari to run the local AI.'))
   }
 
-  const previous = engine
-  engineModel = model
-  engine = (async () => {
-    if (previous) {
-      // Free the GPU memory held by the other model.
-      await previous.then((old) => old.unload()).catch(() => undefined)
-    }
+  if (current) {
+    current.cancel(new Error('Switched to another model.'))
+    current.worker.terminate()
+    current = null
+  }
+
+  const worker = new Worker(new URL('./llm.worker.ts', import.meta.url), { type: 'module' })
+  let cancel: (err: Error) => void = () => undefined
+  const cancelled = new Promise<never>((_, reject) => {
+    cancel = reject
+  })
+  const loading = (async () => {
     const { CreateWebWorkerMLCEngine } = await import('@mlc-ai/web-llm')
-    const worker = new Worker(new URL('./llm.worker.ts', import.meta.url), { type: 'module' })
     return CreateWebWorkerMLCEngine(worker, model, {
       initProgressCallback: (report) => {
+        if (current?.worker !== worker) return
         for (const listener of listeners) listener({ progress: report.progress, text: report.text })
       },
     })
   })()
+  const engine = Promise.race([loading, cancelled])
+  const entry: Loaded = { model, worker, engine, cancel }
+  current = entry
   engine.catch(() => {
-    engine = null
-    engineModel = null
+    // Only forget this load if it is still the current one.
+    if (current === entry) {
+      current.worker.terminate()
+      current = null
+    }
   })
   return engine
+}
+
+/** Keeps the last bit of what the model is writing and reports it a few times a second. */
+function thoughtTicker(onThought?: (tail: string) => void) {
+  let all = ''
+  let last = 0
+  return (piece: string, flush = false) => {
+    if (!onThought) return
+    all = (all + piece).slice(-600)
+    const now = performance.now()
+    if (!flush && now - last < 90) return
+    last = now
+    onThought(all.replace(/<\/?think>/g, ' ').replace(/\s+/g, ' ').trim().slice(-110))
+  }
+}
+
+type Delta = { content?: string | null; reasoning_content?: string | null }
+
+/** Human-readable load status: "Downloading 412 MB · 38s" or "Starting on the GPU". */
+export function describeLoad(report: LoadProgress | null): string {
+  if (!report) return 'Preparing'
+  const text = report.text
+  const mb = text.match(/(\d+)MB fetched/)?.[1]
+  const secs = text.match(/(\d+) secs elapsed/)?.[1]
+  if (/param cache|Fetching/i.test(text) && mb) return `Downloading · ${mb} MB${secs ? ` · ${secs}s` : ''}`
+  if (/Loading model from cache/i.test(text)) return 'Reading from cache'
+  if (/shader|GPU|Loading GPU|compil/i.test(text)) return 'Starting on the GPU'
+  if (/Start to fetch|params|wasm|config|tokenizer/i.test(text)) return 'Fetching model files'
+  return text.replace(/\. It can take a while.*$/i, '').slice(0, 60) || 'Preparing'
 }
 
 export function stopListening(onProgress: (p: LoadProgress) => void) {
@@ -165,9 +210,11 @@ export async function streamNiche(
   onAnswer: (answer: string) => void,
   onThinking: (thinking: boolean) => void,
   signal: AbortSignal,
+  onThought?: (tail: string) => void,
 ): Promise<void> {
   const spec = MODELS.find((m) => m.id === model) ?? MODELS[0]
   const llm = await getEngine(model)
+  const tick = thoughtTicker(onThought)
   if (signal.aborted) return
 
   const system =
@@ -202,7 +249,6 @@ export async function streamNiche(
   }
 
   let text = ''
-  if (import.meta.env.DEV) (globalThis as { __krillRaw?: string }).__krillRaw = ''
   let thinking = spec.thinks
   onThinking(thinking)
   for await (const chunk of stream) {
@@ -210,9 +256,10 @@ export async function streamNiche(
       llm.interruptGenerate()
       return
     }
-    const piece = chunk.choices[0]?.delta?.content ?? ''
+    const delta = (chunk.choices[0]?.delta ?? {}) as Delta
+    const piece = delta.content ?? ''
     text += piece
-    if (import.meta.env.DEV) (globalThis as { __krillRaw?: string }).__krillRaw = ((globalThis as { __krillRaw?: string }).__krillRaw ?? '') + piece
+    tick((delta.reasoning_content ?? '') + piece)
     if (thinking) {
       const end = text.indexOf('</think>')
       if (end < 0) continue
@@ -225,6 +272,7 @@ export async function streamNiche(
     lines.forEach(emit)
   }
   onThinking(false)
+  tick('', true)
   emit(text)
 }
 
@@ -243,28 +291,33 @@ export async function streamPick(
   onYes: (candidate: string) => void,
   onBatch: (done: number) => void,
   signal: AbortSignal,
+  onThought?: (tail: string) => void,
 ): Promise<void> {
   const llm = await getEngine(model)
   const spec = MODELS.find((m) => m.id === model) ?? MODELS[0]
+  const tick = thoughtTicker(onThought)
+  // A thinking model reasons once per request, so it gets every candidate at once instead of batches.
+  const size = spec.thinks ? candidates.length : PICK_BATCH
   const byKey = new Map(candidates.map((c) => [normalize(c), c]))
-  for (let start = 0; start < candidates.length; start += PICK_BATCH) {
+  for (let start = 0; start < candidates.length; start += size) {
     if (signal.aborted) return
-    const batch = candidates.slice(start, start + PICK_BATCH)
+    const batch = candidates.slice(start, start + size)
     const stream = await llm.chat.completions.create({
       stream: true,
       temperature: 0,
-      max_tokens: (spec.thinks ? 900 : 0) + batch.length * 14 + 24,
+      max_tokens: (spec.thinks ? 1500 : 0) + batch.length * 14 + 24,
       messages: [
-        { role: 'system', content: 'You are a strict fact checker. Judge each item on its own. Items you do not know are no.' },
+        { role: 'system', content: 'You are a careful fact checker. Judge each item on its own.' },
         {
           role: 'user',
           content:
-            `Question: ${question}\n\nFor each item, write the item, a colon, then yes or no. Say yes only if you are sure it fits every part of the question.\n\n` +
+            `Question: ${question}\n\nFor each item, write the item, a colon, then yes if it answers the question or no if it does not.\n\n` +
             batch.join('\n'),
         },
       ],
     })
     let text = ''
+    let thinking = spec.thinks
     const take = (line: string) => {
       const m = line.match(/^\s*(?:[-*•]|\d+[.)])?\s*\**(.+?)\**\s*[:\-–—]\s*\**\s*(yes|no)\b/i)
       if (!m || m[2].toLowerCase() !== 'yes') return
@@ -276,18 +329,24 @@ export async function streamPick(
         llm.interruptGenerate()
         return
       }
-      text += chunk.choices[0]?.delta?.content ?? ''
-      if (spec.thinks && text.includes('<think>')) {
+      const delta = (chunk.choices[0]?.delta ?? {}) as Delta
+      const piece = delta.content ?? ''
+      text += piece
+      tick((delta.reasoning_content ?? '') + piece)
+      if (thinking) {
+        // DeepSeek writes its reasoning first; judgements only count after </think>.
         const end = text.indexOf('</think>')
         if (end < 0) continue
         text = text.slice(end + '</think>'.length)
+        thinking = false
       }
       const lines = text.split('\n')
       text = lines.pop() ?? ''
       lines.forEach(take)
     }
     take(text)
-    onBatch(Math.min(candidates.length, start + PICK_BATCH))
+    tick(' · ', true)
+    onBatch(Math.min(candidates.length, start + size))
   }
 }
 

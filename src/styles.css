@@ -843,3 +843,17 @@ h1 {
 .ask-scored[data-rarity="rare"] .chip-copy { border-left-color: #ff8b93; }
 .ask-scored[data-rarity="common"] .chip-copy { border-left-color: rgba(77, 227, 255, 0.5); }
 .ask-unchecked .chip-copy { border-style: dashed; opacity: 0.85; }
+
+/* Live preview of what the model is writing */
+.ask-thought {
+  margin: 6px 0 8px;
+  padding: 4px 8px;
+  min-height: 2.4em;
+  border-left: 2px solid rgba(255, 93, 143, 0.5);
+  background: rgba(255, 93, 143, 0.06);
+  color: var(--muted);
+  font-size: 15px;
+  font-style: italic;
+  line-height: 1.15;
+  word-break: break-word;
+}

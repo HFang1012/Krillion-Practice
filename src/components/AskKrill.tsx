@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { BankIndex, PromptMeta, Tier } from '../types'
 import { loadShard } from '../lib/bank'
 import {
+  describeLoad,
   findPrompt,
   getEngine,
   hasWebGpu,
@@ -26,7 +27,7 @@ const SAME_QUESTION = 0.72
 const NICHE_TIERS: Tier[] = ['krillion', 'deepcut', 'rare']
 const SHOW_FIRST = 36
 /** Candidates judged per round, rarest first. Rare answers are the ones worth points. */
-const PICK_ROUND = 48
+const PICK_ROUND = 24
 
 type BankHit = { meta: PromptMeta; groups: { tier: Tier; answers: string[] }[] }
 type Checked = { head: string; rules: string[]; answers: LexRow[] }
@@ -63,6 +64,8 @@ export function AskKrill({ index }: { index: BankIndex }) {
   const [rejected, setRejected] = useState(0)
   const [aiState, setAiState] = useState<'idle' | 'thinking' | 'streaming' | 'done' | 'error'>('idle')
   const [aiError, setAiError] = useState<string | null>(null)
+  /** The tail of what the model is writing right now, shown as a live preview. */
+  const [thought, setThought] = useState('')
   const [nextSpec, setNextSpec] = useState<{ spec: AskSpec; screen: Screen } | null>(null)
   /** Pick mode: real candidates the model judges in batches. */
   const [pick, setPick] = useState<{ question: string; candidates: LexRow[]; checked: number; total: number } | null>(null)
@@ -122,6 +125,7 @@ export function AskKrill({ index }: { index: BankIndex }) {
     setRejected(0)
     setAiError(null)
     setAiState('idle')
+    setThought('')
   }
 
   function runAi(spec: AskSpec, screen: Screen) {
@@ -163,6 +167,7 @@ export function AskKrill({ index }: { index: BankIndex }) {
       },
       (thinking) => setAiState(thinking ? 'thinking' : 'streaming'),
       controller.signal,
+      setThought,
     )
       .then(() => {
         if (!controller.signal.aborted) setAiState('done')
@@ -183,6 +188,7 @@ export function AskKrill({ index }: { index: BankIndex }) {
       setRejected(0)
     }
     setAiError(null)
+    setThought('')
     setNextSpec(null)
     const total = candidates.length
     setPick({ question, candidates, checked: from, total })
@@ -216,6 +222,7 @@ export function AskKrill({ index }: { index: BankIndex }) {
       },
       (done) => setPick((prev) => (prev ? { ...prev, checked: from + done } : prev)),
       controller.signal,
+      setThought,
     )
       .then(() => {
         if (!controller.signal.aborted) setAiState('done')
@@ -338,8 +345,11 @@ export function AskKrill({ index }: { index: BankIndex }) {
                 <span style={{ width: `${pct}%` }} />
               </div>
               <p className="ask-note">
-                {pct < 100 ? `Loading the local AI · ${pct}%` : 'Starting the local AI'}
-                {' · downloads once, then it is cached'}
+                {pct > 0 && pct < 100 ? `${pct}% · ` : ''}
+                {describeLoad(progress)}
+              </p>
+              <p className="ask-note ask-load-detail">
+                Downloads once, then loads from cache. Dictionary and letter-rule answers work meanwhile.
               </p>
             </div>
           ) : null}
@@ -433,6 +443,11 @@ export function AskKrill({ index }: { index: BankIndex }) {
                       : ''}
                 </h3>
                 {aiState === 'error' ? <p className="error">{aiError}</p> : null}
+                {thought && (aiState === 'thinking' || aiState === 'streaming') ? (
+                  <p className="ask-thought" aria-live="off" title="What the AI is writing right now">
+                    …{thought}
+                  </p>
+                ) : null}
                 {pick ? (
                   <p className="ask-note">
                     AI checked {pick.checked} of {pick.total} real {pick.total === 1 ? 'answer' : 'answers'} that pass
